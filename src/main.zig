@@ -1,5 +1,20 @@
 const std = @import("std");
 
+pub fn reset_scheme() !void {
+    const stdout = std.io.getStdOut().writer();
+    var counter: u8 = 0;
+    while (counter < 15) : (counter += 1) {
+        stdout.print("\x1b]104;{c}\x07", counter);
+    }
+    stdout.print("\x1b]110\x07");
+    stdout.print("\x1b]111\x07");
+    stdout.print("\x1b]112\x07");
+}
+
+pub fn set_scheme(host_name: []u8) !void {
+    std.log.err("Not implemented for '{}', yet.", host_name);
+}
+
 pub fn main() !u8 {
     const alloc: std.mem.Allocator = std.heap.page_allocator;
     var args = try std.process.argsWithAllocator(alloc);
@@ -8,23 +23,16 @@ pub fn main() !u8 {
         std.log.err("Gimme a single SSH host name to work on!", .{});
         return 1;
     }
-
-    // stdout is for the actual output of your application, for example if you
-    // are implementing gzip, then only the compressed bytes should be sent to
-    // stdout, not any debugging messages.
-    const stdout_file = std.io.getStdOut().writer();
-    var bw = std.io.bufferedWriter(stdout_file);
-    const stdout = bw.writer();
-
-    try stdout.print("Run `zig build test` to run the tests.\n", .{});
-
-    try bw.flush(); // don't forget to flush!
-    return 0;
-}
-
-test "simple test" {
-    var list = std.ArrayList(i32).init(std.testing.allocator);
-    defer list.deinit(); // try commenting this out and see if zig detects the memory leak!
-    try list.append(42);
-    try std.testing.expectEqual(@as(i32, 42), list.pop());
+    // Jump over program name.
+    _ = args.next();
+    const host_name = args.next();
+    if (std.mem.eql(
+        u8,
+        @as([]u8, host_name),
+        "reset",
+    )) {
+        reset_scheme();
+    } else {
+        set_scheme(host_name);
+    }
 }
