@@ -4,15 +4,18 @@ pub fn reset_scheme() !void {
     const stdout = std.io.getStdOut().writer();
     var counter: u8 = 0;
     while (counter < 15) : (counter += 1) {
-        stdout.print("\x1b]104;{c}\x07", counter);
+        const color_index = [_]u8{counter};
+        try stdout.writeAll("\x1b]104;");
+        try stdout.writeAll(&color_index);
+        try stdout.writeAll("\x07");
     }
-    stdout.print("\x1b]110\x07");
-    stdout.print("\x1b]111\x07");
-    stdout.print("\x1b]112\x07");
+    try stdout.writeAll("\x1b]110\x07");
+    try stdout.writeAll("\x1b]111\x07");
+    try stdout.writeAll("\x1b]112\x07");
 }
 
-pub fn set_scheme(host_name: []u8) !void {
-    std.log.err("Not implemented for '{}', yet.", host_name);
+pub fn set_scheme(_: []const u8) void {
+    // std.log.err("Not implemented for '{}', yet.", host_name);
 }
 
 pub fn main() !u8 {
@@ -28,11 +31,12 @@ pub fn main() !u8 {
     const host_name = args.next();
     if (std.mem.eql(
         u8,
-        @as([]u8, host_name),
+        host_name orelse "",
         "reset",
     )) {
-        reset_scheme();
+        try reset_scheme();
     } else {
-        set_scheme(host_name);
+        set_scheme(host_name orelse "");
     }
+    return 0;
 }
