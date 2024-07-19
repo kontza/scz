@@ -1,5 +1,6 @@
 const std = @import("std");
 const builtin = @import("builtin");
+const strippables = " \t";
 
 pub fn resetScheme() !void {
     const stdout = std.io.getStdOut().writer();
@@ -20,7 +21,6 @@ fn getThemeName(host_name: []const u8) ![]const u8 {
         .allocator = allocator,
         .argv = &.{ "ssh", "-G", host_name },
     });
-    const strippables = comptime " \t";
     defer allocator.free(proc.stdout);
     defer allocator.free(proc.stderr);
     var lines = std.mem.split(u8, proc.stdout, "\n");
@@ -46,7 +46,19 @@ pub fn setScheme(host_name: []const u8) !void {
             else => "/usr/share/ghostty",
         };
     }
-    std.log.info("THEME {s}, RES {s}, tag {}", .{ theme_name, res_dir, builtin.os.tag });
+    const theme_path = std.fmt.allocPrintZ(allocator, "{s}/themes/{s}", .{ res_dir, theme_name }) catch "";
+    const theme_file = try std.fs.openFileAbsolute(theme_path, .{});
+    defer theme_file.close();
+    const theme_data = theme_file.readToEndAlloc(allocator, 4096) catch "";
+    defer allocator.free(theme_data);
+    var lines = std.mem.split(u8, theme_data, "\n");
+    while (lines.next()) |line| {
+        const trimmed = std.mem.trim(u8, line, strippables);
+        if (trimmed.len == 0 or trimmed[0] == '#') {
+            continue;
+        }
+        std.log.info("TRIMMED: {s}", .{trimmed});
+    }
     // if theme_name is not None:
     //     try:
     //         res_dir = os.environ["GHOSTTY_RESOURCES_DIR"]
