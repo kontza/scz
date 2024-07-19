@@ -36,6 +36,7 @@ fn getThemeName(host_name: []const u8) ![]const u8 {
 }
 
 pub fn setScheme(host_name: []const u8) !void {
+    const max_bytes_per_line = 4096;
     const theme_name = try getThemeName(host_name);
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     const allocator = gpa.allocator();
@@ -49,10 +50,10 @@ pub fn setScheme(host_name: []const u8) !void {
     const theme_path = std.fmt.allocPrintZ(allocator, "{s}/themes/{s}", .{ res_dir, theme_name }) catch "";
     const theme_file = try std.fs.openFileAbsolute(theme_path, .{});
     defer theme_file.close();
-    const theme_data = theme_file.readToEndAlloc(allocator, 4096) catch "";
-    defer allocator.free(theme_data);
-    var lines = std.mem.split(u8, theme_data, "\n");
-    while (lines.next()) |line| {
+    var buffered_reader = std.io.bufferedReader(theme_file.reader());
+    const reader = buffered_reader.reader();
+    while (try reader.readUntilDelimiterOrEofAlloc(allocator, '\n', max_bytes_per_line)) |line| {
+        defer allocator.free(line);
         const trimmed = std.mem.trim(u8, line, strippables);
         if (trimmed.len == 0 or trimmed[0] == '#') {
             continue;
