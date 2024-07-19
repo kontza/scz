@@ -15,35 +15,27 @@ pub fn resetScheme() !void {
 fn getThemeName(host_name: []const u8) ![]const u8 {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     const allocator = gpa.allocator();
-    var proc = std.process.Child.init(&[_][]const u8{ "ssh", "-G", host_name }, allocator);
-
-    // Set the desired behavior for the standard streams
-    proc.stdin_behavior = .Ignore;
-    proc.stdout_behavior = .Pipe;
-    proc.stderr_behavior = .Inherit;
-
-    // Start the execution of the child process
-    try proc.spawn();
-
-    // Wait for the child process to finish execution
-    const term = try proc.wait();
-
-    // Print the captured output from the child process
-    std.debug.print("Child process output:\n{}\n", .{proc.stdout.?});
-
-    // Check the exit status of the child process
-    if (term == .Exited) {
-        std.debug.print("Child process exited with status {}\n", .{term});
-    } else if (term == .Signal) {
-        std.debug.print("Child process terminated by signal {}\n", .{term.Signal});
-    } else {
-        std.debug.print("Child process stopped or unknown termination\n", .{});
+    const proc = try std.process.Child.run(.{
+        .allocator = allocator,
+        .argv = &.{ "ssh", "-G", host_name },
+    });
+    defer allocator.free(proc.stdout);
+    defer allocator.free(proc.stderr);
+    var lines = std.mem.split(u8, proc.stdout, "\n");
+    while (lines.next()) |line| {
+        var parts = std.mem.split(u8, line, "=");
+        const part = std.mem.trim(u8, parts.next() orelse "", " \t");
+        if (std.mem.eql(u8, part, "setenv TERMINAL_THEME")) {
+            const theme_name = std.mem.trim(u8, parts.next() orelse "", " \t");
+            return try allocator.dupeZ(u8, theme_name);
+        }
     }
     return "";
 }
 
 pub fn setScheme(host_name: []const u8) !void {
-    _ = getThemeName(host_name) catch {};
+    const result = try getThemeName(host_name);
+    std.log.info("Theme name: {s}", .{result});
 }
 
 pub fn main() !u8 {
@@ -63,12 +55,14 @@ pub fn main() !u8 {
         host_name orelse "",
         "reset",
     )) {
-        resetScheme() catch {
-            return 0;
+        resetScheme() catch |err| {
+            std.log.err("resetScheme failed: {}", .{err});
+            return 2;
         };
     } else {
-        setScheme(host_name orelse "") catch {
-            return 0;
+        setScheme(host_name orelse "") catch |err| {
+            std.log.err("setScheme failed: {}", .{err});
+            return 2;
         };
     }
     return 0;
