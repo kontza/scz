@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 
 pub fn resetScheme() !void {
     const stdout = std.io.getStdOut().writer();
@@ -19,14 +20,15 @@ fn getThemeName(host_name: []const u8) ![]const u8 {
         .allocator = allocator,
         .argv = &.{ "ssh", "-G", host_name },
     });
+    const strippables = comptime " \t";
     defer allocator.free(proc.stdout);
     defer allocator.free(proc.stderr);
     var lines = std.mem.split(u8, proc.stdout, "\n");
     while (lines.next()) |line| {
         var parts = std.mem.split(u8, line, "=");
-        const part = std.mem.trim(u8, parts.next() orelse "", " \t");
+        const part = std.mem.trim(u8, parts.next() orelse "", strippables);
         if (std.mem.eql(u8, part, "setenv TERMINAL_THEME")) {
-            const theme_name = std.mem.trim(u8, parts.next() orelse "", " \t");
+            const theme_name = std.mem.trim(u8, parts.next() orelse "", strippables);
             return try allocator.dupeZ(u8, theme_name);
         }
     }
@@ -34,8 +36,50 @@ fn getThemeName(host_name: []const u8) ![]const u8 {
 }
 
 pub fn setScheme(host_name: []const u8) !void {
-    const result = try getThemeName(host_name);
-    std.log.info("Theme name: {s}", .{result});
+    const theme_name = try getThemeName(host_name);
+    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    const allocator = gpa.allocator();
+    var res_dir = std.process.getEnvVarOwned(allocator, "GHOSTTY_RESOURCES_DIR") catch "";
+    if (res_dir.len == 0) {
+        res_dir = switch (builtin.os.tag) {
+            .macos => "/Applications/Ghostty.app/Contents/Resources/ghostty",
+            else => "/usr/share/ghostty",
+        };
+    }
+    std.log.info("THEME {s}, RES {s}, tag {}", .{ theme_name, res_dir, builtin.os.tag });
+    // if theme_name is not None:
+    //     try:
+    //         res_dir = os.environ["GHOSTTY_RESOURCES_DIR"]
+    //     except KeyError:
+    //         res_dir = None
+    //     if res_dir is None:
+    //         match sys.platform:
+    //             case "darwin":
+    //                 res_dir = "/Applications/Ghostty.app/Contents/Resources/ghostty"
+    //             case "linux":
+    //                 res_dir = "/usr/share/ghostty"
+    //     with open(
+    //         f"{res_dir}/themes/{theme_name}",
+    //     ) as config_file:
+    //         for line in config_file.readlines():
+    //             line = line.strip()
+    //             if line is None or line.startswith("#"):
+    //                 continue
+    //             for p in patterns:
+    //                 mo = p["pat"].match(line)
+    //                 if mo is not None:
+    //                     format = p["fmt"].replace("\\", "").format("0")
+    //                     if mo.group().startswith("palette"):
+    //                         color = line[mo.span()[1] :].replace("=", ";").strip()
+    //                     else:
+    //                         color = f'#{line.split("=")[1].strip()}'
+    //                     if show_debug:
+    //                         print(
+    //                             "'{0}': Would use '\\033]{1}\\007'".format(
+    //                                 line, p["fmt"].format(color)
+    //                             )
+    //                         )
+    //                     print("\033]{0}\007".format(p["fmt"].format(color)), end="")
 }
 
 pub fn main() !u8 {
