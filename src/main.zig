@@ -1,6 +1,12 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const strippables = " \t";
+const patterns = std.StaticStringMap([]const u8).initComptime(.{
+    .{ "palette", "4" },
+    .{ "foreground", "10" },
+    .{ "background", "11" },
+    .{ "cursor-color", "12" },
+});
 
 pub fn resetScheme() !void {
     const stdout = std.io.getStdOut().writer();
@@ -58,7 +64,11 @@ pub fn setScheme(host_name: []const u8) !void {
         if (trimmed.len == 0 or trimmed[0] == '#') {
             continue;
         }
-        std.log.info("TRIMMED: {s}", .{trimmed});
+        for (patterns.keys()) |key| {
+            if (std.mem.eql(u8, key, trimmed[0..key.len])) {
+                std.log.info("matched: {s} vs {s}", .{ key, trimmed });
+            }
+        }
     }
     // if theme_name is not None:
     //     try:
