@@ -2,17 +2,18 @@ const std = @import("std");
 const builtin = @import("builtin");
 const strippables = " \t";
 const patterns = std.StaticStringMap([]const u8).initComptime(.{
-    .{ "palette", "4" },
-    .{ "foreground", "10" },
-    .{ "background", "11" },
-    .{ "cursor-color", "12" },
+    .{ "palette", "4;" },
+    .{ "foreground", "10;#" },
+    .{ "background", "11;#" },
+    .{ "cursor-color", "12;#" },
 });
+const show_debug = false;
 
 pub fn resetScheme() !void {
     const stdout = std.io.getStdOut().writer();
     var counter: u8 = 0;
     while (counter < 15) : (counter += 1) {
-        const color_index = [_]u8{counter};
+        const color_index = [_]u8{'0' + counter};
         try stdout.writeAll("\x1b]104;" ++ &color_index ++ "\x07");
     }
     try stdout.writeAll("\x1b]110\x07");
@@ -44,6 +45,9 @@ fn getThemeName(host_name: []const u8) ![]const u8 {
 pub fn setScheme(host_name: []const u8) !void {
     const max_bytes_per_line = 4096;
     const theme_name = try getThemeName(host_name);
+    if (show_debug and theme_name.len > 0) {
+        std.log.info("Found theme: {s}", .{theme_name});
+    }
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     const allocator = gpa.allocator();
     var res_dir = std.process.getEnvVarOwned(allocator, "GHOSTTY_RESOURCES_DIR") catch "";
@@ -58,6 +62,7 @@ pub fn setScheme(host_name: []const u8) !void {
     defer theme_file.close();
     var buffered_reader = std.io.bufferedReader(theme_file.reader());
     const reader = buffered_reader.reader();
+    const stdout = std.io.getStdOut().writer();
     while (try reader.readUntilDelimiterOrEofAlloc(allocator, '\n', max_bytes_per_line)) |line| {
         defer allocator.free(line);
         const trimmed = std.mem.trim(u8, line, strippables);
@@ -66,43 +71,35 @@ pub fn setScheme(host_name: []const u8) !void {
         }
         for (patterns.keys()) |key| {
             if (std.mem.eql(u8, key, trimmed[0..key.len])) {
-                std.log.info("matched: {s} vs {s}", .{ key, trimmed });
+                var runner = key.len;
+                while (trimmed[runner] == ' ' and runner < trimmed.len) {
+                    runner += 1;
+                }
+                if (runner + 2 < trimmed.len and trimmed[runner] == '=' and trimmed[runner + 1] == ' ') {
+                    const value = try std.mem.Allocator.dupe(allocator, u8, trimmed[runner + 2 ..]);
+                    std.mem.replaceScalar(u8, value, '=', ';');
+                    var list = std.ArrayList(u8).init(allocator);
+                    defer list.deinit();
+                    const pattern_value = patterns.get(key) orelse "";
+                    if (show_debug) {
+                        try list.appendSlice("\\x1b]");
+                        try list.appendSlice(pattern_value);
+                        try list.appendSlice(value);
+                        try list.appendSlice("\\x07");
+                        std.log.info("'{s}': Would use '{s}'", .{ trimmed, list.items });
+                    }
+                    if (pattern_value.len > 0) {
+                        try stdout.writeAll("\x1b]");
+                        try stdout.writeAll(pattern_value);
+                        try stdout.writeAll(value);
+                        try stdout.writeAll("\x07");
+                    }
+                } else {
+                    continue;
+                }
             }
         }
     }
-    // if theme_name is not None:
-    //     try:
-    //         res_dir = os.environ["GHOSTTY_RESOURCES_DIR"]
-    //     except KeyError:
-    //         res_dir = None
-    //     if res_dir is None:
-    //         match sys.platform:
-    //             case "darwin":
-    //                 res_dir = "/Applications/Ghostty.app/Contents/Resources/ghostty"
-    //             case "linux":
-    //                 res_dir = "/usr/share/ghostty"
-    //     with open(
-    //         f"{res_dir}/themes/{theme_name}",
-    //     ) as config_file:
-    //         for line in config_file.readlines():
-    //             line = line.strip()
-    //             if line is None or line.startswith("#"):
-    //                 continue
-    //             for p in patterns:
-    //                 mo = p["pat"].match(line)
-    //                 if mo is not None:
-    //                     format = p["fmt"].replace("\\", "").format("0")
-    //                     if mo.group().startswith("palette"):
-    //                         color = line[mo.span()[1] :].replace("=", ";").strip()
-    //                     else:
-    //                         color = f'#{line.split("=")[1].strip()}'
-    //                     if show_debug:
-    //                         print(
-    //                             "'{0}': Would use '\\033]{1}\\007'".format(
-    //                                 line, p["fmt"].format(color)
-    //                             )
-    //                         )
-    //                     print("\033]{0}\007".format(p["fmt"].format(color)), end="")
 }
 
 pub fn main() !u8 {
