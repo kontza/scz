@@ -1,5 +1,8 @@
 const std = @import("std");
 const builtin = @import("builtin");
+const c = @cImport({
+    @cInclude("unistd.h");
+});
 const strippables = " \t";
 const patterns = std.StaticStringMap([]const u8).initComptime(.{
     .{ "palette", "4;" },
@@ -102,7 +105,15 @@ pub fn setScheme(host_name: []const u8) !void {
     }
 }
 
+fn examineParent() bool {
+    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    const allocator = gpa.allocator();
+    const ppid = c.getppid();
+    const rr = std.process.Child.run(.{ .allocator = allocator, .argv = .{ "/bin/ps", "-eo", "args=", std.fmt.allocPrint(allocator, "{d}", ppid) } }) catch return false;
+}
+
 pub fn main() !u8 {
+    // karlseguin/log.zig to log everything to $TMPDIR/ssh_colourz.log
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     const allocator = gpa.allocator();
     var args = try std.process.argsWithAllocator(allocator);
@@ -111,6 +122,9 @@ pub fn main() !u8 {
         std.log.err("Gimme a single SSH host name to work on!", .{});
         return 1;
     }
+    // Get parent process information.
+    const is_themable = examineParent();
+
     // Jump over program name.
     _ = args.next();
     const host_name = args.next();
