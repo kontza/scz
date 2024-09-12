@@ -7,6 +7,5 @@ pub fn build(b: *std.Build) void {
         .target = b.standardTargetOptions(.{}),
         .optimize = b.standardOptimizeOption(.{}),
     });
-
     b.installArtifact(exe);
 }

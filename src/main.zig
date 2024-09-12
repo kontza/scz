@@ -2,6 +2,7 @@ const std = @import("std");
 const builtin = @import("builtin");
 const c = @cImport({
     @cInclude("unistd.h");
+    @cInclude("time.h");
 });
 const strippables = " \t";
 const patterns = std.StaticStringMap([]const u8).initComptime(.{
@@ -11,6 +12,38 @@ const patterns = std.StaticStringMap([]const u8).initComptime(.{
     .{ "cursor-color", "12;#" },
 });
 const show_debug = false;
+const FALLBACK_TMP = "/tmp";
+const LOG_NAME = "/ssh_colourz.log";
+pub const std_options = .{
+    .logFn = myLogFn,
+};
+
+pub fn myLogFn(
+    comptime level: std.log.Level,
+    comptime scope: @TypeOf(.enum_literal),
+    comptime format: []const u8,
+    args: anytype,
+) void {
+    const scope_prefix = "(" ++ @tagName(scope) ++ "): ";
+    const prefix = "[" ++ comptime level.asText()[0..3] ++ "] " ++ scope_prefix;
+    if (level == std.log.Level.err) {
+        std.debug.lockStdErr();
+        defer std.debug.unlockStdErr();
+        const stderr = std.io.getStdErr().writer();
+        nosuspend stderr.print(prefix ++ format ++ "\n", args) catch return;
+    } else {
+        const tmp_dir = std.c.getenv("TMPDIR") orelse FALLBACK_TMP;
+        var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+        const allocator = gpa.allocator();
+        const tmp_path = std.fmt.allocPrint(allocator, "{s}/{s}", .{ tmp_dir, LOG_NAME }) catch FALLBACK_TMP ++ LOG_NAME;
+        if (std.fs.createFileAbsolute(tmp_path, .{ .truncate = false })) |log_file| {
+            defer log_file.close();
+            if (log_file.seekFromEnd(0)) {
+                nosuspend log_file.writer().print(prefix ++ format ++ "\n", args) catch return;
+            } else |_| {}
+        } else |_| {}
+    }
+}
 
 pub fn resetScheme() !void {
     const stdout = std.io.getStdOut().writer();
@@ -109,13 +142,26 @@ fn examineParent() bool {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     const allocator = gpa.allocator();
     const ppid = c.getppid();
-    const rr = std.process.Child.run(.{ .allocator = allocator, .argv = .{ "/bin/ps", "-eo", "args=", std.fmt.allocPrint(allocator, "{d}", ppid) } }) catch return false;
+    const ppid_str = std.fmt.allocPrint(allocator, "{d}", .{ppid}) catch "";
+    if (ppid_str.len == 0) {
+        return false;
+    }
+    const argv = [4][]const u8{ "/bin/ps", "-eo", "args=", ppid_str };
+    const rr = std.process.Child.run(.{ .allocator = allocator, .argv = &argv }) catch return false;
+    std.log.info("Parent command line {s}", .{rr.stdout});
+    return true;
 }
 
 pub fn main() !u8 {
-    // karlseguin/log.zig to log everything to $TMPDIR/ssh_colourz.log
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     const allocator = gpa.allocator();
+
+    var buffer = try allocator.allocSentinel(u8, 256, 0);
+    buffer[0] = '1';
+    _ = c.strftime(buffer.ptr, buffer.len, "%Y-%m-%d %H:%M:%S", std.time.timestamp());
+    std.log.info("=== {s}", .{buffer});
+    allocator.free(buffer);
+
     var args = try std.process.argsWithAllocator(allocator);
     defer args.deinit();
     if (args.inner.count != 2) {
@@ -123,25 +169,25 @@ pub fn main() !u8 {
         return 1;
     }
     // Get parent process information.
-    const is_themable = examineParent();
-
-    // Jump over program name.
-    _ = args.next();
-    const host_name = args.next();
-    if (std.mem.eql(
-        u8,
-        host_name orelse "",
-        "reset",
-    )) {
-        resetScheme() catch |err| {
-            std.log.err("resetScheme failed: {}", .{err});
-            return 2;
-        };
-    } else {
-        setScheme(host_name orelse "") catch |err| {
-            std.log.err("setScheme failed: {}", .{err});
-            return 2;
-        };
+    if (examineParent()) {
+        // Jump over program name.
+        _ = args.next();
+        const host_name = args.next();
+        if (std.mem.eql(
+            u8,
+            host_name orelse "",
+            "reset",
+        )) {
+            resetScheme() catch |err| {
+                std.log.err("resetScheme failed: {}", .{err});
+                return 2;
+            };
+        } else {
+            setScheme(host_name orelse "") catch |err| {
+                std.log.err("setScheme failed: {}", .{err});
+                return 2;
+            };
+        }
     }
     return 0;
 }
