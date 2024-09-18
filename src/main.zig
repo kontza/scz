@@ -14,7 +14,7 @@ const patterns = std.StaticStringMap([]const u8).initComptime(.{
 });
 const show_debug = false;
 const FALLBACK_TMP = "/tmp";
-const LOG_NAME = "/ssh_colourz.log";
+const LOG_NAME = "/ssh_colouriser.log";
 pub const std_options = .{
     .logFn = myLogFn,
 };
@@ -164,36 +164,38 @@ pub fn main() !u8 {
 
     const t = std.time.timestamp();
     const tmp = c.localtime(&t);
-    _ = c.strftime(buffer.ptr, 32, "%Y-%m-%d %H:%M:%S", tmp);
-    std.log.info("=== {s}", .{buffer});
+    const count = c.strftime(buffer.ptr, 32, "%Y-%m-%d %H:%M:%S", tmp);
+    std.log.info("=== {s}", .{buffer[0..count]});
     allocator.free(buffer);
 
-    // var args = try std.process.argsWithAllocator(allocator);
-    // defer args.deinit();
-    // if (args.inner.count != 2) {
-    //     std.log.err("Gimme a single SSH host name to work on!", .{});
-    //     return 1;
-    // }
+    var args = try std.process.argsWithAllocator(allocator);
+    defer args.deinit();
+    if (args.inner.count != 2) {
+        const stderr = std.io.getStdErr().writer();
+        _ = try stderr.print("Gimme a single SSH host name to work on!\n", .{});
+        return 1;
+    }
+
     // Get parent process information.
-    // if (examineParent()) {
-    //     // Jump over program name.
-    //     _ = args.next();
-    //     const host_name = args.next();
-    //     if (std.mem.eql(
-    //         u8,
-    //         host_name orelse "",
-    //         "reset",
-    //     )) {
-    //         resetScheme() catch |err| {
-    //             std.log.err("resetScheme failed: {}", .{err});
-    //             return 2;
-    //         };
-    //     } else {
-    //         setScheme(host_name orelse "") catch |err| {
-    //             std.log.err("setScheme failed: {}", .{err});
-    //             return 2;
-    //         };
-    //     }
-    // }
+    if (examineParent()) {
+        // Jump over program name.
+        _ = args.next();
+        const host_name = args.next();
+        if (std.mem.eql(
+            u8,
+            host_name orelse "",
+            "reset",
+        )) {
+            resetScheme() catch |err| {
+                std.log.err("resetScheme failed: {}", .{err});
+                return 2;
+            };
+        } else {
+            setScheme(host_name orelse "") catch |err| {
+                std.log.err("setScheme failed: {}", .{err});
+                return 2;
+            };
+        }
+    }
     return 0;
 }
