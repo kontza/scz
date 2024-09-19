@@ -1,7 +1,12 @@
 .{
     .name = "scz",
     .version = "1.0.0",
-    .dependencies = .{},
+    .dependencies = .{
+        .@"zig-toml" = .{
+            .url = "git+https://github.com/sam701/zig-toml#78c8512273ab83c0a71f1063d9049ce7abdb70b0",
+            .hash = "122090781267644f32a5ab9c0be0eae71df5ac3401f017e39dd6a58f583b7e10f1d1",
+        },
+    },
     .paths = .{
         "build.zig",
         "build.zig.zon",

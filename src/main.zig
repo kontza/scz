@@ -1,4 +1,5 @@
 const std = @import("std");
+const toml = @import("zig-toml");
 const builtin = @import("builtin");
 const c = @cImport({
     @cInclude("unistd.h");
@@ -16,6 +17,10 @@ const FALLBACK_TMP = "/tmp";
 const LOG_NAME = "/ssh_colouriser.log";
 pub const std_options = .{
     .logFn = myLogFn,
+};
+
+const Config = struct {
+    bypasses: []const u8,
 };
 
 pub fn myLogFn(
@@ -150,6 +155,25 @@ fn examineParent() bool {
     const argv = [4][]const u8{ "/bin/ps", "-eo", "args=", ppid_str };
     const rr = std.process.Child.run(.{ .allocator = allocator, .argv = &argv }) catch return false;
     std.log.info("Parent command line {s}", .{rr.stdout});
+
+    var config_home = std.process.getEnvVarOwned(allocator, "XDG_CONFIG_HOME") catch "";
+    if (config_home.len == 0) {
+        config_home = std.process.getEnvVarOwned(allocator, "HOME") catch "";
+    }
+
+    var parser = toml.Parser(Config).init(allocator);
+    defer parser.deinit();
+
+    const config_file = std.fmt.allocPrint(allocator, "{s}/scz.toml", .{config_home}) catch "";
+    if (config_file.len == 0) {
+        return false;
+    }
+    var result = try parser.parseFile(config_file);
+    defer result.deinit();
+
+    const config = result.value;
+    std.log.info("Bypasses: {any}", .{config.bypasses});
+
     return true;
 }
 
