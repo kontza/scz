@@ -12,7 +12,6 @@ const patterns = std.StaticStringMap([]const u8).initComptime(.{
     .{ "background", "11;#" },
     .{ "cursor-color", "12;#" },
 });
-const show_debug = false;
 const FALLBACK_TMP = "/tmp";
 const LOG_NAME = "/ssh_colouriser.log";
 pub const std_options = .{
@@ -82,7 +81,7 @@ fn getThemeName(host_name: []const u8) ![]const u8 {
 pub fn setScheme(host_name: []const u8) !void {
     const max_bytes_per_line = 4096;
     const theme_name = try getThemeName(host_name);
-    if (show_debug and theme_name.len > 0) {
+    if (theme_name.len > 0) {
         std.log.info("Found theme: {s}", .{theme_name});
     }
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
@@ -118,14 +117,15 @@ pub fn setScheme(host_name: []const u8) !void {
                     var list = std.ArrayList(u8).init(allocator);
                     defer list.deinit();
                     const pattern_value = patterns.get(key) orelse "";
-                    if (show_debug) {
+
+                    if (pattern_value.len > 0) {
+                        // Escape backslashes for logging.
                         try list.appendSlice("\\x1b]");
                         try list.appendSlice(pattern_value);
                         try list.appendSlice(value);
                         try list.appendSlice("\\x07");
                         std.log.info("'{s}': Would use '{s}'", .{ trimmed, list.items });
-                    }
-                    if (pattern_value.len > 0) {
+                        // Now print out the codes for real
                         try stdout.writeAll("\x1b]");
                         try stdout.writeAll(pattern_value);
                         try stdout.writeAll(value);
@@ -157,11 +157,8 @@ pub fn main() !u8 {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     const allocator = gpa.allocator();
 
-    // const callocator = std.heap.c_allocator;
+    // Log the current timestamp
     var buffer = try allocator.alloc(u8, 64);
-    buffer[0] = '1';
-    @memset(buffer, 0);
-
     const t = std.time.timestamp();
     const tmp = c.localtime(&t);
     const count = c.strftime(buffer.ptr, 32, "%Y-%m-%d %H:%M:%S", tmp);
