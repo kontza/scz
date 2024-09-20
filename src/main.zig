@@ -1,11 +1,13 @@
 const std = @import("std");
-const toml = @import("zig-toml");
+const tomlz = @import("tomlz");
 const builtin = @import("builtin");
 const c = @cImport({
     @cInclude("unistd.h");
     @cInclude("time.h");
     @cInclude("stdio.h");
 });
+var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+const allocator = gpa.allocator();
 const strippables = " \t";
 const patterns = std.StaticStringMap([]const u8).initComptime(.{
     .{ "palette", "4;" },
@@ -15,12 +17,13 @@ const patterns = std.StaticStringMap([]const u8).initComptime(.{
 });
 const FALLBACK_TMP = "/tmp";
 const LOG_NAME = "/ssh_colouriser.log";
+const MAX_BYTES_PER_LINE = 4096;
 pub const std_options = .{
     .logFn = myLogFn,
 };
 
 const Config = struct {
-    bypasses: []const u8,
+    bypasses: []const []const u8,
 };
 
 pub fn myLogFn(
@@ -38,8 +41,6 @@ pub fn myLogFn(
         nosuspend stderr.print(prefix ++ format ++ "\n", args) catch return;
     } else {
         const tmp_dir = std.c.getenv("TMPDIR") orelse FALLBACK_TMP;
-        var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-        const allocator = gpa.allocator();
         const tmp_path = std.fmt.allocPrint(allocator, "{s}/{s}", .{ tmp_dir, LOG_NAME }) catch FALLBACK_TMP ++ LOG_NAME;
         if (std.fs.createFileAbsolute(tmp_path, .{ .truncate = false })) |log_file| {
             defer log_file.close();
@@ -63,8 +64,6 @@ pub fn resetScheme() !void {
 }
 
 fn getThemeName(host_name: []const u8) ![]const u8 {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    const allocator = gpa.allocator();
     const proc = try std.process.Child.run(.{
         .allocator = allocator,
         .argv = &.{ "ssh", "-G", host_name },
@@ -84,13 +83,10 @@ fn getThemeName(host_name: []const u8) ![]const u8 {
 }
 
 pub fn setScheme(host_name: []const u8) !void {
-    const max_bytes_per_line = 4096;
     const theme_name = try getThemeName(host_name);
     if (theme_name.len > 0) {
         std.log.info("Found theme: {s}", .{theme_name});
     }
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    const allocator = gpa.allocator();
     var res_dir = std.process.getEnvVarOwned(allocator, "GHOSTTY_RESOURCES_DIR") catch "";
     if (res_dir.len == 0) {
         res_dir = switch (builtin.os.tag) {
@@ -104,7 +100,7 @@ pub fn setScheme(host_name: []const u8) !void {
     var buffered_reader = std.io.bufferedReader(theme_file.reader());
     const reader = buffered_reader.reader();
     const stdout = std.io.getStdOut().writer();
-    while (try reader.readUntilDelimiterOrEofAlloc(allocator, '\n', max_bytes_per_line)) |line| {
+    while (try reader.readUntilDelimiterOrEofAlloc(allocator, '\n', MAX_BYTES_PER_LINE)) |line| {
         defer allocator.free(line);
         const trimmed = std.mem.trim(u8, line, strippables);
         if (trimmed.len == 0 or trimmed[0] == '#') {
@@ -144,43 +140,44 @@ pub fn setScheme(host_name: []const u8) !void {
     }
 }
 
-fn examineParent() bool {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    const allocator = gpa.allocator();
+fn examineParent() !bool {
     const ppid = c.getppid();
-    const ppid_str = std.fmt.allocPrint(allocator, "{d}", .{ppid}) catch "";
-    if (ppid_str.len == 0) {
-        return false;
-    }
+    const ppid_str = try std.fmt.allocPrint(allocator, "{d}", .{ppid});
     const argv = [4][]const u8{ "/bin/ps", "-eo", "args=", ppid_str };
     const rr = std.process.Child.run(.{ .allocator = allocator, .argv = &argv }) catch return false;
-    std.log.info("Parent command line {s}", .{rr.stdout});
+    const stripped = std.mem.trim(u8, rr.stdout, "\n");
+    std.log.info("Parent command line {s}", .{stripped});
 
     var config_home = std.process.getEnvVarOwned(allocator, "XDG_CONFIG_HOME") catch "";
     if (config_home.len == 0) {
-        config_home = std.process.getEnvVarOwned(allocator, "HOME") catch "";
+        config_home = try std.process.getEnvVarOwned(allocator, "HOME");
     }
 
-    var parser = toml.Parser(Config).init(allocator);
-    defer parser.deinit();
-
-    const config_file = std.fmt.allocPrint(allocator, "{s}/scz.toml", .{config_home}) catch "";
-    if (config_file.len == 0) {
-        return false;
+    const config_file_name = try std.fmt.allocPrint(allocator, "{s}/scz.toml", .{config_home});
+    std.log.info("Going to read '{s}'", .{config_file_name});
+    const config_file = try std.fs.openFileAbsolute(config_file_name, .{});
+    defer config_file.close();
+    var buffered_reader = std.io.bufferedReader(config_file.reader());
+    var data: [MAX_BYTES_PER_LINE]u8 = undefined;
+    var config_size: usize = 0;
+    while (true) {
+        const count = try buffered_reader.read(&data);
+        if (count == 0) {
+            break;
+        }
+        config_size += count;
     }
-    var result = try parser.parseFile(config_file);
-    defer result.deinit();
-
-    const config = result.value;
-    std.log.info("Bypasses: {any}", .{config.bypasses});
-
+    const slice = data[0..config_size];
+    std.log.info("Read config: {d} bytes{s}", .{ config_size, slice });
+    var table = try tomlz.parse(allocator, slice);
+    defer table.deinit(allocator);
+    for (table.getArray("bypasses").?.items()) |value| {
+        std.log.info("Bypass: {s}", .{value.string});
+    }
     return true;
 }
 
 pub fn main() !u8 {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    const allocator = gpa.allocator();
-
     // Log the current timestamp
     var buffer = try allocator.alloc(u8, 64);
     const t = std.time.timestamp();
@@ -198,7 +195,11 @@ pub fn main() !u8 {
     }
 
     // Get parent process information.
-    if (examineParent()) {
+    const do_work = examineParent() catch |err| {
+        std.log.err("Parent examination failed: {}", .{err});
+        return err;
+    };
+    if (do_work) {
         // Jump over program name.
         _ = args.next();
         const host_name = args.next();

@@ -7,8 +7,8 @@ pub fn build(b: *std.Build) void {
         .target = b.standardTargetOptions(.{}),
         .optimize = b.standardOptimizeOption(.{}),
     });
-    const ZT = "zig-toml";
-    const zig_toml = b.dependency(ZT, .{});
-    exe.root_module.addImport(ZT, zig_toml.module(ZT));
+    const ZT = "tomlz";
+    const tomlz = b.dependency(ZT, .{});
+    exe.root_module.addImport(ZT, tomlz.module(ZT));
     b.installArtifact(exe);
 }
