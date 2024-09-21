@@ -140,13 +140,13 @@ pub fn setScheme(host_name: []const u8) !void {
     }
 }
 
-fn examineParent() !bool {
+fn shouldChangeTheme() !bool {
     const ppid = c.getppid();
     const ppid_str = try std.fmt.allocPrint(allocator, "{d}", .{ppid});
     const argv = [4][]const u8{ "/bin/ps", "-eo", "args=", ppid_str };
     const rr = std.process.Child.run(.{ .allocator = allocator, .argv = &argv }) catch return false;
-    const stripped = std.mem.trim(u8, rr.stdout, "\n");
-    std.log.info("Parent command line {s}", .{stripped});
+    const parent_command_line = std.mem.trim(u8, rr.stdout, "\n");
+    std.log.info("Parent command line {s}", .{parent_command_line});
 
     var config_home = std.process.getEnvVarOwned(allocator, "XDG_CONFIG_HOME") catch "";
     if (config_home.len == 0) {
@@ -158,34 +158,32 @@ fn examineParent() !bool {
     const config_file = try std.fs.openFileAbsolute(config_file_name, .{});
     defer config_file.close();
     var buffered_reader = std.io.bufferedReader(config_file.reader());
-    var data: [MAX_BYTES_PER_LINE]u8 = undefined;
+    var buffer: [MAX_BYTES_PER_LINE]u8 = undefined;
     var config_size: usize = 0;
     while (true) {
-        const count = try buffered_reader.read(&data);
+        const count = try buffered_reader.read(&buffer);
         if (count == 0) {
             break;
         }
         config_size += count;
     }
-    const slice = data[0..config_size];
-    std.log.info("Read config: {d} bytes{s}", .{ config_size, slice });
+    const slice = buffer[0..config_size];
+    std.log.info("Read config: {d} bytes", .{config_size});
     var table = try tomlz.parse(allocator, slice);
     defer table.deinit(allocator);
     for (table.getArray("bypasses").?.items()) |value| {
-        std.log.info("Bypass: {s}", .{value.string});
+        std.log.info("Checking bypass '{s}'", .{value.string});
+        if (std.mem.indexOf(u8, parent_command_line, value.string)) |index| {
+            if (index >= 0) {
+                std.log.info("Bypass matched parent's command line at index {}", .{index});
+                return false;
+            }
+        }
     }
     return true;
 }
 
 pub fn main() !u8 {
-    // Log the current timestamp
-    var buffer = try allocator.alloc(u8, 64);
-    const t = std.time.timestamp();
-    const tmp = c.localtime(&t);
-    const count = c.strftime(buffer.ptr, 32, "%Y-%m-%d %H:%M:%S", tmp);
-    std.log.info("=== {s}", .{buffer[0..count]});
-    allocator.free(buffer);
-
     var args = try std.process.argsWithAllocator(allocator);
     defer args.deinit();
     if (args.inner.count != 2) {
@@ -194,30 +192,41 @@ pub fn main() !u8 {
         return 1;
     }
 
-    // Get parent process information.
-    const do_work = examineParent() catch |err| {
+    // Log the current timestamp
+    var buffer = try allocator.alloc(u8, 64);
+    const t = std.time.timestamp();
+    const tmp = c.localtime(&t);
+    const count = c.strftime(buffer.ptr, 32, "%Y-%m-%d %H:%M:%S", tmp);
+    std.log.info("=== {s}", .{buffer[0..count]});
+    allocator.free(buffer);
+
+    // Should we change the theme?
+    const do_work_or_failed = shouldChangeTheme();
+    if (do_work_or_failed) |do_work| {
+        // Here we're left with a bool.
+        if (do_work) {
+            // Jump over program name to get to the hostname.
+            _ = args.next();
+            const host_name = args.next();
+            if (std.mem.eql(
+                u8,
+                host_name orelse "",
+                "reset",
+            )) {
+                resetScheme() catch |err| {
+                    std.log.err("resetScheme failed: {}", .{err});
+                    return 2;
+                };
+            } else {
+                setScheme(host_name orelse "") catch |err| {
+                    std.log.err("setScheme failed: {}", .{err});
+                    return 2;
+                };
+            }
+        }
+    } else |err| {
         std.log.err("Parent examination failed: {}", .{err});
         return err;
-    };
-    if (do_work) {
-        // Jump over program name.
-        _ = args.next();
-        const host_name = args.next();
-        if (std.mem.eql(
-            u8,
-            host_name orelse "",
-            "reset",
-        )) {
-            resetScheme() catch |err| {
-                std.log.err("resetScheme failed: {}", .{err});
-                return 2;
-            };
-        } else {
-            setScheme(host_name orelse "") catch |err| {
-                std.log.err("setScheme failed: {}", .{err});
-                return 2;
-            };
-        }
     }
     return 0;
 }
