@@ -2,9 +2,13 @@ const std = @import("std");
 const tomlz = @import("tomlz");
 const builtin = @import("builtin");
 const c = @cImport({
-    @cInclude("unistd.h");
-    @cInclude("time.h");
+    @cInclude("libproc.h");
+    @cInclude("signal.h");
     @cInclude("stdio.h");
+    @cInclude("stdlib.h");
+    @cInclude("sys/event.h");
+    @cInclude("time.h");
+    @cInclude("unistd.h");
 });
 var gpa = std.heap.GeneralPurposeAllocator(.{}){};
 const allocator = gpa.allocator();
@@ -18,6 +22,7 @@ const patterns = std.StaticStringMap([]const u8).initComptime(.{
 const FALLBACK_TMP = "/tmp";
 const LOG_NAME = "/ssh_colouriser.log";
 const MAX_BYTES_PER_LINE = 4096;
+const VERSION = "1.0.0";
 pub const std_options = .{
     .logFn = myLogFn,
 };
@@ -52,6 +57,7 @@ pub fn myLogFn(
 }
 
 pub fn resetScheme() !void {
+    std.log.info("Going reset scheme", .{});
     const stdout = std.io.getStdOut().writer();
     var counter: u8 = 0;
     while (counter < 15) : (counter += 1) {
@@ -80,6 +86,73 @@ fn getThemeName(host_name: []const u8) ![]const u8 {
         }
     }
     return "";
+}
+
+fn sigint_handler(_: c_int) callconv(.C) void {
+    std.log.info("sigint_handler resetting scheme", .{});
+    resetScheme() catch |err| {
+        std.log.err("Failed to reset scheme: {}", .{err});
+    };
+    std.c.exit(0);
+}
+
+fn getGrandParentPid() u32 {
+    const ppid = c.getppid();
+    var info: c.proc_bsdinfo = undefined;
+    _ = c.proc_pidinfo(ppid, c.PROC_PIDTBSDINFO, 0, &info, c.PROC_PIDTBSDINFO_SIZE);
+    return info.pbi_ppid;
+}
+
+fn setupProcessHook() !void {
+    var ppid: u32 = 0;
+    var fpid: i32 = 0;
+
+    var sig_ret = c.signal(std.c.SIG.INT, sigint_handler);
+    std.log.info("Setting SIGINT handler returned '{?}'", .{sig_ret});
+    sig_ret = c.signal(std.c.SIG.PIPE, sigint_handler);
+    std.log.info("Setting SIGPIPE handler returned '{?}'", .{sig_ret});
+
+    if (ppid == 0) {
+        ppid = getGrandParentPid();
+        std.log.info("Got grand parent PID '{?}'", .{ppid});
+    }
+
+    fpid = c.fork();
+    if (fpid != 0) {
+        std.log.info("Master process exiting", .{});
+        std.c.exit(0);
+    }
+    std.log.info("Forked process continuing", .{});
+
+    // Set up kqueue and wait for the parent process to exit
+    const kq = c.kqueue();
+    if (kq == -1) {
+        std.log.err("Failed to acquire kqueue\n", .{});
+        std.c.exit(1);
+    }
+
+    const timeout = c.timespec{ .tv_sec = 8 * 60 * 60, .tv_nsec = 0 };
+    var kev = c.struct_kevent{ .ident = @intCast(ppid), .filter = c.EVFILT_PROC, .flags = c.EV_ADD, .fflags = c.NOTE_EXIT, .data = 0, .udata = null };
+
+    var kret = c.kevent(kq, &kev, 1, null, 0, null);
+    if (kret == -1) {
+        std.log.err("Failed to set an event listener\n", .{});
+        std.c.exit(1);
+    }
+    std.log.debug("kev before listen: {?}", .{kev});
+
+    kret = c.kevent(kq, null, 0, &kev, 1, &timeout);
+    if (kret == -1) {
+        std.log.err("Failed to listen to NOTE_EXIT event\n", .{});
+        std.c.exit(1);
+    }
+
+    std.log.debug("kev after listen: {?}", .{kev});
+    if (kret > 0) {
+        resetScheme() catch |err| {
+            std.log.err("Failed to reset scheme: {}", .{err});
+        };
+    }
 }
 
 pub fn setScheme(host_name: []const u8) !void {
@@ -138,15 +211,16 @@ pub fn setScheme(host_name: []const u8) !void {
             }
         }
     }
+    try setupProcessHook();
 }
 
 fn shouldChangeTheme() !bool {
-    const ppid = c.getppid();
-    const ppid_str = try std.fmt.allocPrint(allocator, "{d}", .{ppid});
-    const argv = [4][]const u8{ "/bin/ps", "-eo", "args=", ppid_str };
+    const gppid = getGrandParentPid();
+    const gppid_str = try std.fmt.allocPrint(allocator, "{d}", .{gppid});
+    const argv = [4][]const u8{ "/bin/ps", "-eo", "args=", gppid_str };
     const rr = std.process.Child.run(.{ .allocator = allocator, .argv = &argv }) catch return false;
     const parent_command_line = std.mem.trim(u8, rr.stdout, "\n");
-    std.log.info("Parent command line {s}", .{parent_command_line});
+    std.log.info("Parent command line '{s}'", .{parent_command_line});
 
     var config_home = std.process.getEnvVarOwned(allocator, "XDG_CONFIG_HOME") catch "";
     if (config_home.len == 0) {
@@ -188,7 +262,7 @@ pub fn main() !u8 {
     defer args.deinit();
     if (args.inner.count != 2) {
         const stderr = std.io.getStdErr().writer();
-        _ = try stderr.print("Gimme a single SSH host name to work on!\n", .{});
+        _ = try stderr.print("scz {s}\n\nGimme a single SSH host name to work on!\n", .{VERSION});
         return 1;
     }
 
@@ -207,21 +281,25 @@ pub fn main() !u8 {
         if (do_work) {
             // Jump over program name to get to the hostname.
             _ = args.next();
-            const host_name = args.next();
-            if (std.mem.eql(
-                u8,
-                host_name orelse "",
-                "reset",
-            )) {
-                resetScheme() catch |err| {
-                    std.log.err("resetScheme failed: {}", .{err});
-                    return 2;
-                };
+            if (args.next()) |host_name| {
+                std.log.info("host_name {s}", .{host_name});
+                if (std.mem.eql(
+                    u8,
+                    host_name,
+                    "RESET-SCHEME",
+                )) {
+                    resetScheme() catch |err| {
+                        std.log.err("resetScheme failed: {}", .{err});
+                        return 2;
+                    };
+                } else {
+                    setScheme(host_name) catch |err| {
+                        std.log.err("setScheme failed: {}", .{err});
+                        return 2;
+                    };
+                }
             } else {
-                setScheme(host_name orelse "") catch |err| {
-                    std.log.err("setScheme failed: {}", .{err});
-                    return 2;
-                };
+                std.log.err("Failed to get host_name from argv", .{});
             }
         }
     } else |err| {
