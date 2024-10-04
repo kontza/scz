@@ -20,12 +20,14 @@ const patterns = std.StaticStringMap([]const u8).initComptime(.{
     .{ "cursor-color", "12;#" },
 });
 const FALLBACK_TMP = "/tmp";
-const LOG_NAME = "/ssh_colouriser.log";
+const LOG_NAME = "ssh_colouriser.log";
+const FALLBACK_LOG = FALLBACK_TMP ++ "/" ++ LOG_NAME;
 const MAX_BYTES_PER_LINE = 4096;
 const VERSION = "1.0.0";
 pub const std_options = .{
     .logFn = myLogFn,
 };
+pub const log_level: std.log.Level = .debug;
 
 const Config = struct {
     bypasses: []const []const u8,
@@ -45,8 +47,15 @@ pub fn myLogFn(
         const stderr = std.io.getStdErr().writer();
         nosuspend stderr.print(prefix ++ format ++ "\n", args) catch return;
     } else {
-        const tmp_dir = std.c.getenv("TMPDIR") orelse FALLBACK_TMP;
-        const tmp_path = std.fmt.allocPrint(allocator, "{s}/{s}", .{ tmp_dir, LOG_NAME }) catch FALLBACK_TMP ++ LOG_NAME;
+        const tmp_dir = std.process.getEnvVarOwned(allocator, "TMPDIR") catch FALLBACK_TMP;
+        defer allocator.free(tmp_dir);
+        var tmp_path: []u8 = undefined;
+        if (tmp_dir[tmp_dir.len - 1] == '/') {
+            tmp_path = std.fmt.allocPrint(allocator, "{s}{s}", .{ tmp_dir, LOG_NAME }) catch "";
+        } else {
+            tmp_path = std.fmt.allocPrint(allocator, "{s}/{s}", .{ tmp_dir, LOG_NAME }) catch "";
+        }
+        defer allocator.free(tmp_path);
         if (std.fs.createFileAbsolute(tmp_path, .{ .truncate = false })) |log_file| {
             defer log_file.close();
             if (log_file.seekFromEnd(0)) {
@@ -57,7 +66,7 @@ pub fn myLogFn(
 }
 
 pub fn resetScheme() !void {
-    std.log.info("Going reset scheme", .{});
+    std.log.info("Going to reset scheme", .{});
     const stdout = std.io.getStdOut().writer();
     var counter: u8 = 0;
     while (counter < 15) : (counter += 1) {
@@ -85,7 +94,7 @@ fn getThemeName(host_name: []const u8) ![]const u8 {
             return try allocator.dupeZ(u8, theme_name);
         }
     }
-    return "";
+    return error.OperationAborted;
 }
 
 fn sigint_handler(_: c_int) callconv(.C) void {
@@ -156,10 +165,11 @@ fn setupProcessHook() !void {
 }
 
 pub fn setScheme(host_name: []const u8) !void {
-    const theme_name = try getThemeName(host_name);
-    if (theme_name.len > 0) {
-        std.log.info("Found theme: {s}", .{theme_name});
-    }
+    const theme_name = getThemeName(host_name) catch |err| {
+        std.log.info("No theme defined for '{s}' ({})", .{ host_name, err });
+        return;
+    };
+    std.log.info("Found theme: {s}", .{theme_name});
     var res_dir = std.process.getEnvVarOwned(allocator, "GHOSTTY_RESOURCES_DIR") catch "";
     if (res_dir.len == 0) {
         res_dir = switch (builtin.os.tag) {
@@ -167,6 +177,7 @@ pub fn setScheme(host_name: []const u8) !void {
             else => "/usr/share/ghostty",
         };
     }
+    std.log.info("Reading Ghostty resources from '{s}'", .{res_dir});
     const theme_path = std.fmt.allocPrintZ(allocator, "{s}/themes/{s}", .{ res_dir, theme_name }) catch "";
     const theme_file = try std.fs.openFileAbsolute(theme_path, .{});
     defer theme_file.close();
@@ -229,7 +240,10 @@ fn shouldChangeTheme() !bool {
 
     const config_file_name = try std.fmt.allocPrint(allocator, "{s}/scz.toml", .{config_home});
     std.log.info("Going to read '{s}'", .{config_file_name});
-    const config_file = try std.fs.openFileAbsolute(config_file_name, .{});
+    const config_file = std.fs.openFileAbsolute(config_file_name, .{}) catch |err| {
+        std.log.err("Failed to open config file '{s}': {}", .{ config_file_name, err });
+        return false;
+    };
     defer config_file.close();
     var buffered_reader = std.io.bufferedReader(config_file.reader());
     var buffer: [MAX_BYTES_PER_LINE]u8 = undefined;
