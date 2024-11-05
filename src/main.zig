@@ -41,10 +41,10 @@ pub fn myLogFn(
 ) void {
     const scope_prefix = "(" ++ @tagName(scope) ++ "): ";
     const prefix = "[" ++ comptime level.asText()[0..3] ++ "] " ++ scope_prefix;
+    std.debug.lockStdErr();
+    defer std.debug.unlockStdErr();
+    const stderr = std.io.getStdErr().writer();
     if (level == std.log.Level.err) {
-        std.debug.lockStdErr();
-        defer std.debug.unlockStdErr();
-        const stderr = std.io.getStdErr().writer();
         nosuspend stderr.print(prefix ++ format ++ "\n", args) catch return;
     } else {
         const tmp_dir = std.process.getEnvVarOwned(allocator, "TMPDIR") catch FALLBACK_TMP;
@@ -60,8 +60,12 @@ pub fn myLogFn(
             defer log_file.close();
             if (log_file.seekFromEnd(0)) {
                 nosuspend log_file.writer().print(prefix ++ format ++ "\n", args) catch return;
-            } else |_| {}
-        } else |_| {}
+            } else |e| {
+                nosuspend stderr.print("Seek failed: {?}\n", .{e}) catch return;
+            }
+        } else |e| {
+            nosuspend stderr.print("Failed to create log file: {?}\n", .{e}) catch return;
+        }
     }
 }
 
@@ -225,12 +229,21 @@ pub fn setScheme(host_name: []const u8) !void {
     try setupProcessHook();
 }
 
+fn pidToCommandLine(pid: u32) []const u8 {
+    const pid_str = std.fmt.allocPrint(allocator, "{d}", .{pid}) catch return "";
+    const argv = [4][]const u8{ "/bin/ps", "-eo", "args=", pid_str };
+    const rr = std.process.Child.run(.{ .allocator = allocator, .argv = &argv }) catch return "";
+    const process_command_line = std.mem.trim(u8, rr.stdout, "\n");
+    std.log.info("Parent command line '{s}'", .{process_command_line});
+    return process_command_line;
+}
+
 fn shouldChangeTheme() !bool {
     const gppid = getGrandParentPid();
-    const gppid_str = try std.fmt.allocPrint(allocator, "{d}", .{gppid});
-    const argv = [4][]const u8{ "/bin/ps", "-eo", "args=", gppid_str };
-    const rr = std.process.Child.run(.{ .allocator = allocator, .argv = &argv }) catch return false;
-    const parent_command_line = std.mem.trim(u8, rr.stdout, "\n");
+    const gparent_command_line = pidToCommandLine(gppid);
+    std.log.info("Grand parent command line '{s}'", .{gparent_command_line});
+    const ppid = c.getppid();
+    const parent_command_line = pidToCommandLine(@intCast(ppid));
     std.log.info("Parent command line '{s}'", .{parent_command_line});
 
     var config_home = std.process.getEnvVarOwned(allocator, "XDG_CONFIG_HOME") catch "";
@@ -260,7 +273,16 @@ fn shouldChangeTheme() !bool {
     var table = try tomlz.parse(allocator, slice);
     defer table.deinit(allocator);
     for (table.getArray("bypasses").?.items()) |value| {
-        std.log.info("Checking bypass '{s}'", .{value.string});
+        std.log.info("Checking bypass '{s}' in grand parent", .{value.string});
+        if (std.mem.indexOf(u8, gparent_command_line, value.string)) |index| {
+            if (index >= 0) {
+                std.log.info("Bypass matched parent's command line at index {}", .{index});
+                return false;
+            }
+        }
+    }
+    for (table.getArray("bypasses").?.items()) |value| {
+        std.log.info("Checking bypass '{s}' in parent", .{value.string});
         if (std.mem.indexOf(u8, parent_command_line, value.string)) |index| {
             if (index >= 0) {
                 std.log.info("Bypass matched parent's command line at index {}", .{index});
