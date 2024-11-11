@@ -1,4 +1,8 @@
 # scz
+
+**This has been abandoned due to it not working after macOS 15.1 update.
+Use [_osscz_](https://github.com/kontza/osscz) instead. It works.**
+
 Set Ghostty pane background colour on SSH connection.
 
 ## How to Setup
