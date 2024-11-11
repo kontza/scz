@@ -74,8 +74,9 @@ pub fn resetScheme() !void {
     const stdout = std.io.getStdOut().writer();
     var counter: u8 = 0;
     while (counter < 15) : (counter += 1) {
-        const color_index = [_]u8{'0' + counter};
-        try stdout.writeAll("\x1b]104;" ++ &color_index ++ "\x07");
+        const counter_string = std.fmt.allocPrint(allocator, "\x1b]104;{d}\x07", .{counter}) catch "";
+        defer allocator.free(counter_string);
+        try stdout.writeAll(counter_string);
     }
     try stdout.writeAll("\x1b]110\x07");
     try stdout.writeAll("\x1b]111\x07");
@@ -339,7 +340,6 @@ pub fn main() !u8 {
             }
         }
     } else |err| {
-        std.log.err("Parent examination failed: {}", .{err});
         return err;
     }
     return 0;
