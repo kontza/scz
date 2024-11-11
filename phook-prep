@@ -1,0 +1,25 @@
+#!/bin/sh
+SSH_PID=$(ps -o ppid= $PPID)
+SSH_COMMAND_LINE=$(ps -eo args= $SSH_PID)
+echo "==== $(date)" >>/tmp/phook-prep.log
+echo "CMD = $SSH_COMMAND_LINE" >>/tmp/phook-prep.log
+case $SSH_COMMAND_LINE in
+*"git-upload-pack"*)
+  # Bypass: git over SSH
+  ;;
+*"git-receive-pack"*)
+  # Bypass: git over SSH
+  ;;
+*"rsync"*)
+  # Bypass: rsync over SSH
+  ;;
+*"ssh -W"*)
+  # Bypass: ProxyJump stage with SSH
+  ;;
+*"BatchMode yes"*)
+  # BatchMode; e.g. tab completion in an 'scp' command completion on remote server
+  ;;
+*)
+  phook -p $SSH_PID -e "scz $1" -a 'scz reset'
+  ;;
+esac
